@@ -225,22 +225,22 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
   }
 
   switch(move_bits){
-  case 0x62: //'b'
+  case 'b': //Forward
 	  move_type = 1;
 	  break;
-  case 0x63: //'c'
+  case 'c': //Reverse
 	  move_type = 2;
 	  break;
-  case 0x64: //'d'
+  case 'd': //Left
 	  move_type = 3;
 	  break;
-  case 0x65: //'e'
+  case 'e': //Right
 	  move_type = 4;
 	  break;
-  case 0x73: //'s'
+  case 's': //Stop
 	  move_type = 0;
 	  break;
-  default: //'other character'
+  default: //Stop for other characters
 	  move_type = 0;
 	  break;
   }
@@ -320,6 +320,8 @@ int main(void)
 	  while(move_type == 1){
 		  move(1,speed_left,speed_right,50);
 		  //target_current = (float)(1 - (speed_rpm_right/100000)) * speed_right;
+
+
 		  if (speed_rpm_right < target_rpm) {
 			  speed_right++;
 		  }
