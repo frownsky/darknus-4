@@ -62,6 +62,8 @@ volatile uint32_t signal_polarity_left = 1;
 
 volatile uint32_t speed_rpm_right = 0;
 volatile uint32_t speed_rpm_left = 0;
+
+#define SPEED_LOW_PASS 0.8
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
@@ -241,6 +243,9 @@ void TIM1_BRK_TIM15_IRQHandler(void)
 		  pulse_width_right = current_captured_right - last_captured_right;
 	  }
 	  last_captured_right = current_captured_right;
+
+	  speed_rpm_right = speed_rpm_right * SPEED_LOW_PASS +
+			  (1 - SPEED_LOW_PASS) * 1000*(60*40000)/(pulse_width_right*20);
   }
   //Left Opto-Coupler
   if((TIM15->SR & TIM_SR_CC2IF) != 0){
@@ -250,16 +255,16 @@ void TIM1_BRK_TIM15_IRQHandler(void)
 		  pulse_width_left = current_captured_left - last_captured_left;
 	  }
 	  last_captured_left = current_captured_left;
-  }
 
+	  speed_rpm_left = speed_rpm_left * SPEED_LOW_PASS +
+			  (1 - SPEED_LOW_PASS) * 1000*(60*40000)/(pulse_width_left*20);
+  }
 
   /**
    * speed_rpm = (60 x f_clock_cnt) / (pulse_width x resolution)
    * f_clock_cnt = 20 KHz
    * resolution = 40
    * */
-  speed_rpm_right = (60*20000)/(pulse_width_right*20);
-  speed_rpm_left = (60*20000)/(pulse_width_left*20);
 
   if((TIM15->SR & TIM_SR_UIF) != 0){
 	  TIM15->SR &= ~TIM_SR_UIF;

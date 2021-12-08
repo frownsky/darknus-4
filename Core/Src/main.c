@@ -64,6 +64,8 @@ void stop(int delay);
 void move(int x,int s_left,int s_right,int delay);
 void rotate(int x,int s_left,int s_right,int delay);
 void spin(int x, int s_left,int s_right,int delay);
+
+float target_current;
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -71,9 +73,11 @@ void spin(int x, int s_left,int s_right,int delay);
 
 
 volatile uint32_t move_type = 0;
-volatile uint16_t speed_left = 250;
-volatile uint16_t speed_right = 250;
+volatile uint16_t speed_left = 0;
+volatile uint16_t speed_right = 0;
 volatile uint16_t movement = 0;
+
+volatile uint32_t target_rpm = 50000;
 uint8_t tx_data[4];
 uint8_t rx_data[];
 
@@ -198,20 +202,26 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 //  uint8_t received_char = (*rx_data);
   HAL_UART_Transmit(&huart2,rx_data, 1, 10);
   switch(speed_bits){
-  case 0x68:
+  case 'h':
 	  speed_left = 400;
 	  speed_right = 400;
 	  break;
-  case 0x6C:
-	  speed_left = 250;
-	  speed_right = 250;
+  case 'm':
+	  speed_left = 300;
+	  speed_right = 300;
 	  break;
-  case 0x73:
+  case 'l':
+	  speed_left = 200;
+	  speed_right = 200;
+	  break;
+  case 's':
 	  speed_left = 0;
 	  speed_right = 0;
+	  break;
   default:
-	  speed_left = 250;
-	  speed_right = 250;
+	  speed_left = 300;
+	  speed_right = 300;
+	  break;
   }
 
   switch(move_bits){
@@ -304,9 +314,32 @@ int main(void)
 	  //MAX CCR is 600. Don't give beyond this value
 	  while(move_type == 0){
 		  stop(50);
+		  speed_rpm_left = (speed_left == 0? 0: speed_rpm_left);
+		  speed_rpm_right = (speed_right == 0? 0: speed_rpm_right);
 	  }
 	  while(move_type == 1){
 		  move(1,speed_left,speed_right,50);
+		  //target_current = (float)(1 - (speed_rpm_right/100000)) * speed_right;
+		  if (speed_rpm_right < target_rpm) {
+			  speed_right++;
+		  }
+		  else {
+			  speed_right--;
+		  }
+		  if (speed_right > 400) {
+			  speed_right = 400;
+		  }
+
+		  if (speed_rpm_left < target_rpm) {
+			  speed_left++;
+		  }
+		  else {
+			  speed_left--;
+		  }
+		  if (speed_left > 400) {
+			  speed_left = 400;
+		  }
+
 	  }
 	  while(move_type == 2){
 		  move(0,speed_left,speed_right,50);
@@ -320,9 +353,6 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-
-
-
 
 
 
@@ -569,7 +599,7 @@ static void MX_TIM15_Init(void)
 
   /* USER CODE END TIM15_Init 1 */
   htim15.Instance = TIM15;
-  htim15.Init.Prescaler = 3199;
+  htim15.Init.Prescaler = 1599;
   htim15.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim15.Init.Period = 65535;
   htim15.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
