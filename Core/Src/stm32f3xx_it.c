@@ -60,10 +60,19 @@ volatile unsigned int pulse_width_left = 1;
 volatile uint16_t last_captured_left = 0;
 volatile uint32_t signal_polarity_left = 1;
 
-volatile uint32_t speed_rpm_right = 0;
-volatile uint32_t speed_rpm_left = 0;
+volatile float speed_rpm_right = 0;
+volatile float speed_rpm_left = 0;
 
-#define SPEED_LOW_PASS 0.8
+volatile uint32_t ticks_left = 0;
+volatile uint32_t ticks_right = 0;
+volatile uint32_t last_ticks_left = 0;
+volatile uint32_t last_ticks_right = 0;
+volatile uint32_t last_timestamp_ms = 0;
+
+volatile uint32_t regular_ticks = 0;
+
+#define TICKS_PER_REVOLUTION 40
+#define SPEED_LOW_PASS 0.9
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
@@ -233,9 +242,24 @@ void DMA1_Channel6_IRQHandler(void)
 void TIM1_BRK_TIM15_IRQHandler(void)
 {
   /* USER CODE BEGIN TIM1_BRK_TIM15_IRQn 0 */
+	regular_ticks++;
 
+	uint32_t timestamp = HAL_GetTick();
+	uint32_t elapsed_time = timestamp - last_timestamp_ms;
+//	regular_ticks = elapsed_time;
+	float calc_rpm_left = (ticks_left - last_ticks_left) * 1000.0 * 60.0 / TICKS_PER_REVOLUTION / elapsed_time;
+	float calc_rpm_right = (ticks_right - last_ticks_right) * 1000.0 * 60.0 / TICKS_PER_REVOLUTION / elapsed_time;
+	speed_rpm_left = SPEED_LOW_PASS * speed_rpm_left + (1 - SPEED_LOW_PASS) * calc_rpm_left;
+	speed_rpm_right = SPEED_LOW_PASS * speed_rpm_right + (1 - SPEED_LOW_PASS) * calc_rpm_right;
+	last_timestamp_ms = timestamp;
+	last_ticks_left = ticks_left;
+	last_ticks_right = ticks_right;
+	uint32_t buffer[2];
+	buffer[0] = last_ticks_left;
+	buffer[1] = last_ticks_right;
+	HAL_UART_Transmit(&huart2, buffer, 16, 10);
   //Right Opto-Coupler
-  uint16_t current_captured_right, current_captured_left;
+  /*uint16_t current_captured_right, current_captured_left;
   if((TIM15->SR & TIM_SR_CC1IF) != 0){
 	  current_captured_right = TIM15->CCR1;
 	  signal_polarity_right = !signal_polarity_right;
@@ -258,7 +282,7 @@ void TIM1_BRK_TIM15_IRQHandler(void)
 
 	  speed_rpm_left = speed_rpm_left * SPEED_LOW_PASS +
 			  (1 - SPEED_LOW_PASS) * 1000*(60*40000)/(pulse_width_left*20);
-  }
+  }*/
 
   /**
    * speed_rpm = (60 x f_clock_cnt) / (pulse_width x resolution)
@@ -301,12 +325,25 @@ void EXTI15_10_IRQHandler(void)
 
   /* USER CODE END EXTI15_10_IRQn 0 */
   HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_13);
+  HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_14);
+  HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_15);
   /* USER CODE BEGIN EXTI15_10_IRQn 1 */
 
   /* USER CODE END EXTI15_10_IRQn 1 */
 }
 
 /* USER CODE BEGIN 1 */
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+	if (GPIO_Pin == GPIO_PIN_15) {
+		// left encoder
+		ticks_left++;
+	}
+	if (GPIO_Pin == GPIO_PIN_14) {
+		// right encoder
+		ticks_right++;
+	}
+}
 
 /* USER CODE END 1 */
 /************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/
