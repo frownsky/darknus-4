@@ -77,10 +77,12 @@ void Error_Handler(void);
 #define USART_RX_GPIO_Port GPIOA
 #define LD2_Pin GPIO_PIN_13
 #define LD2_GPIO_Port GPIOB
-#define OP_Right_Pin GPIO_PIN_14
-#define OP_Right_GPIO_Port GPIOB
-#define OP_Left_Pin GPIO_PIN_15
-#define OP_Left_GPIO_Port GPIOB
+#define ENC_RIGHT_Pin GPIO_PIN_14
+#define ENC_RIGHT_GPIO_Port GPIOB
+#define ENC_RIGHT_EXTI_IRQn EXTI15_10_IRQn
+#define ENC_LEFT_Pin GPIO_PIN_15
+#define ENC_LEFT_GPIO_Port GPIOB
+#define ENC_LEFT_EXTI_IRQn EXTI15_10_IRQn
 #define TMS_Pin GPIO_PIN_13
 #define TMS_GPIO_Port GPIOA
 #define TCK_Pin GPIO_PIN_14

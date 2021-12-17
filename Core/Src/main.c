@@ -1,21 +1,21 @@
 /* USER CODE BEGIN Header */
 /**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body
-  ******************************************************************************
-  * @attention
-  * DC Motors using DRV8833 Motor Driver
-  * <h2><center>&copy; Copyright (c) 2021 STMicroelectronics.
-  * All rights reserved.</center></h2>
-  *
-  * This software component is licensed by ST under BSD 3-Clause license,
-  * the "License"; You may not use this file except in compliance with the
-  * License. You may obtain a copy of the License at:
-  *                        opensource.org/licenses/BSD-3-Clause
-  *
-  ******************************************************************************
-  */
+ ******************************************************************************
+ * @file           : main.c
+ * @brief          : Main program body
+ ******************************************************************************
+ * @attention
+ * DC Motors using DRV8833 Motor Driver
+ * <h2><center>&copy; Copyright (c) 2021 STMicroelectronics.
+ * All rights reserved.</center></h2>
+ *
+ * This software component is licensed by ST under BSD 3-Clause license,
+ * the "License"; You may not use this file except in compliance with the
+ * License. You may obtain a copy of the License at:
+ *                        opensource.org/licenses/BSD-3-Clause
+ *
+ ******************************************************************************
+ */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
@@ -46,6 +46,7 @@ TIM_HandleTypeDef htim15;
 
 UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart2_rx;
+DMA_HandleTypeDef hdma_usart2_tx;
 
 /* USER CODE BEGIN PV */
 
@@ -60,196 +61,214 @@ static void MX_TIM1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM15_Init(void);
 /* USER CODE BEGIN PFP */
-void stop(int delay);
-void move(int x,int s_left,int s_right,int delay);
-void rotate(int x,int s_left,int s_right,int delay);
-void spin(int x, int s_left,int s_right,int delay);
+void stop();
+void move(int x, int s_left, int s_right);
+void rotate(int x, int s_left, int s_right);
+void spin(int x, int s_left, int s_right);
 
-float target_current;
+//float target_current;
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+// PID Controller
+#define MOTOR_KP 3
+#define MOTOR_KI 2
+#define MOTOR_KD 1
+
+typedef struct PID_t {
+	float integral;
+	float derivative;
+	float last_error;
+} PID_t;
+
+PID_t pid_left = { .integral = 0, .derivative = 0, .last_error = 0 };
+PID_t pid_right = { .integral = 0, .derivative = 0, .last_error = 0 };
 
 volatile uint32_t move_type = 0;
 volatile uint16_t speed_left = 0;
 volatile uint16_t speed_right = 0;
 volatile uint16_t movement = 0;
 
-volatile uint32_t target_rpm = 50000;
+volatile float target_rpm = 50.0;
 uint8_t tx_data[4];
-uint8_t rx_data[];
+uint8_t rx_data[10];
 
-extern uint32_t speed_rpm_right;
-extern uint32_t speed_rpm_left;
+extern float speed_rpm_right;
+extern float speed_rpm_left;
 
-void stop(int delay){
+extern uint32_t ticks_left;
+extern uint32_t ticks_right;
+
+void reset_pid() {
+	pid_left.integral = 0;
+	pid_left.derivative = 0;
+	pid_left.last_error = 0;
+	pid_right.integral = 0;
+	pid_right.derivative = 0;
+	pid_right.last_error = 0;
+}
+
+uint16_t update_pid(PID_t *pid, float current_rpm, uint32_t dt) {
+	float error = target_rpm - current_rpm;
+	pid->integral += error * dt / 1000;
+	pid->derivative = (error - pid->last_error) * dt / 1000;
+	float result = MOTOR_KP * error +
+	MOTOR_KI * pid->integral +
+	MOTOR_KD * pid->derivative;
+	pid->last_error = error;
+	if (result >= 600) {
+		return 600;
+	}
+	if (result <= 0) {
+		return 0;
+	}
+	return (uint16_t) result;
+}
+
+void stop() {
 	/***
 	 * delay: delay the code for milliseconds
 	 */
-	TIM1->CCR1=0;
-	TIM1->CCR2=0;
-	TIM1->CCR3=0;
-	TIM1->CCR4=0;
+	TIM1->CCR1 = 0;
+	TIM1->CCR2 = 0;
+	TIM1->CCR3 = 0;
+	TIM1->CCR4 = 0;
 
-	TIM2->CCR1=0;
-	TIM2->CCR2=0;
-	TIM2->CCR3=0;
-	TIM2->CCR4=0;
-
-	HAL_Delay(delay);
-
+	TIM2->CCR1 = 0;
+	TIM2->CCR2 = 0;
+	TIM2->CCR3 = 0;
+	TIM2->CCR4 = 0;
+	reset_pid();
 }
 
-void move(int x, int s_left,int s_right, int delay){
+
+
+// back left wheel: TIM2 CCR1 and 2
+// back right wheel: TIM2 CCR3 and 4
+// front right wheel: TIM1 CCR 3 and 4
+// front left wheel: TIM2 CCR 1 and 2
+void move(int x, int s_left, int s_right) {
 	/***
 	 * x: direction. x = 1 to move forward and x = 0 to reverse
 	 * s: speed or duty cycle
 	 * delay: delay the code for milliseconds
 	 */
-	int speed_left[] = {s_left,0};
-	int speed_right[] = {s_right,0};
+	uint16_t output_left[] = { s_left, 0 };
+	uint16_t output_right[] = { s_right, 0 };
 	int i;
-	i = (x == 1? 1: 0);
-	TIM1->CCR1=speed_left[!i];
-	TIM1->CCR2=speed_left[i];
-	TIM1->CCR3=speed_left[!i];
-	TIM1->CCR4=speed_left[i];
+	i = (x == 1 ? 1 : 0);
+	TIM1->CCR1 = output_left[!i];
+	TIM1->CCR2 = output_left[i];
+	TIM1->CCR3 = output_right[!i];
+	TIM1->CCR4 = output_right[i];
 
-	TIM2->CCR1=speed_right[!i];
-	TIM2->CCR2=speed_right[i];
-	TIM2->CCR3=speed_right[!i];
-	TIM2->CCR4=speed_right[i];
-
-	HAL_Delay(delay);
-
+	TIM2->CCR1 = output_left[!i];
+	TIM2->CCR2 = output_left[i];
+	TIM2->CCR3 = output_right[!i];
+	TIM2->CCR4 = output_right[i];
 }
 
-void rotate(int x, int s_left,int s_right, int delay){
+void rotate(int x, int s_left, int s_right) {
 	/***
 	 * x: direction. x = 1 to rotate left and x = 0 to rotate right
 	 * s: speed or duty cycle
 	 * delay: delay the code for milliseconds
 	 */
-	int speed_left[] = {s_left,0};
-	int speed_right[] = {s_right,0};
+	uint16_t output_left[] = { s_left, 0 };
+	uint16_t output_right[] = { s_right, 0 };
 	int i = 1;
-	i = (x == 1? 1: 0);
-	TIM1->CCR1=speed_left[i];
-	TIM1->CCR2=speed_left[!i];
-	TIM1->CCR3=speed_left[!i];
-	TIM1->CCR4=speed_left[i];
+	i = (x == 1 ? 1 : 0);
+	TIM1->CCR1 = output_left[i];
+	TIM1->CCR2 = output_left[!i];
+	TIM1->CCR3 = output_right[!i];
+	TIM1->CCR4 = output_right[i];
 
-	TIM2->CCR1=speed_right[i];
-	TIM2->CCR2=speed_right[!i];
-	TIM2->CCR3=speed_right[!i];
-	TIM2->CCR4=speed_right[i];
-
-	HAL_Delay(delay);
-
+	TIM2->CCR1 = output_left[i];
+	TIM2->CCR2 = output_left[!i];
+	TIM2->CCR3 = output_right[!i];
+	TIM2->CCR4 = output_right[i];
 }
 
-void spin(int x, int s_left,int s_right, int delay){
+void spin(int x, int s_left, int s_right) {
 	/***
 	 * x: direction. x = 1 to rotate left and x = 0 to rotate right
 	 * s: speed or duty cycle
 	 * delay: delay the code for milliseconds
 	 */
-	int speed_left[] = {s_left,0};
-	int speed_right[] = {s_right,0};
+	uint16_t output_left[] = { s_left, 0 };
+	uint16_t output_right[] = { s_right, 0 };
 	int i = 1;
-	i = (x == 1? 1: 0);
-	TIM1->CCR1=speed_left[i];
-	TIM1->CCR2=speed_left[!i];
-	TIM1->CCR3=speed_left[!i];
-	TIM1->CCR4=speed_left[i];
+	i = (x == 1 ? 1 : 0);
+	TIM1->CCR1 = output_left[i];
+	TIM1->CCR2 = output_left[!i];
+	TIM1->CCR3 = output_right[!i];
+	TIM1->CCR4 = output_right[i];
 
-	TIM2->CCR1=speed_right[i];
-	TIM2->CCR2=speed_right[!i];
-	TIM2->CCR3=speed_right[!i];
-	TIM2->CCR4=speed_right[i];
-
-	HAL_Delay(delay);
-
+	TIM2->CCR1 = output_left[i];
+	TIM2->CCR2 = output_left[!i];
+	TIM2->CCR3 = output_right[!i];
+	TIM2->CCR4 = output_right[i];
 }
 
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+	/* Prevent unused argument(s) compilation warning */
+	UNUSED(huart);
 
+	/* NOTE : This function should not be modified, when the callback is needed,
+	 the HAL_UART_RxCpltCallback can be implemented in the user file.
+	 */
 
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
-{
-  /* Prevent unused argument(s) compilation warning */
-  UNUSED(huart);
+	uint8_t buffer_1 = *rx_data;
+	uint8_t buffer_2 = *(rx_data + 1);
+	/*
+	 * 16-bit value
+	 * received_data[9:0] is for speed
+	 * received_data[15:10] is free we use it to represent movement type
+	 */
+	uint8_t move_bits = buffer_1;
+	uint8_t speed_bits = buffer_2;
 
-  /* NOTE : This function should not be modified, when the callback is needed,
-            the HAL_UART_RxCpltCallback can be implemented in the user file.
-   */
+	switch (speed_bits) {
+	case 'h':
+		target_rpm = 100;
+		break;
+	case 'm':
+		target_rpm = 50;
+		break;
+	case 'l':
+		target_rpm = 25;
+		break;
+	case 's':
+		target_rpm = 0;
+		break;
+	default:
+		target_rpm = 50;
+		break;
+	}
 
-  uint8_t buffer_1 = *rx_data;
-  uint8_t buffer_2 = *(rx_data+1);
-  /*
-   * 16-bit value
-   * received_data[9:0] is for speed
-   * received_data[15:10] is free we use it to represent movement type
-   *
-   * */
-//  uint16_t move_speed_data = (buffer_1<<8)|(buffer_2);
-  uint8_t move_bits = buffer_1;
-  uint8_t speed_bits = buffer_2;
-
-  //speed = (0x03FF&received_data);
-
-//  uint8_t received_char = (*rx_data);
-  HAL_UART_Transmit(&huart2,rx_data, 1, 10);
-  switch(speed_bits){
-  case 'h':
-	  speed_left = 400;
-	  speed_right = 400;
-	  break;
-  case 'm':
-	  speed_left = 300;
-	  speed_right = 300;
-	  break;
-  case 'l':
-	  speed_left = 200;
-	  speed_right = 200;
-	  break;
-  case 's':
-	  speed_left = 0;
-	  speed_right = 0;
-	  break;
-  default:
-	  speed_left = 300;
-	  speed_right = 300;
-	  break;
-  }
-
-  switch(move_bits){
-  case 'b': //Forward
-	  move_type = 1;
-	  break;
-  case 'c': //Reverse
-	  move_type = 2;
-	  break;
-  case 'd': //Left
-	  move_type = 3;
-	  break;
-  case 'e': //Right
-	  move_type = 4;
-	  break;
-  case 's': //Stop
-	  move_type = 0;
-	  break;
-  default: //Stop for other characters
-	  move_type = 0;
-	  break;
-  }
-
-
-
+	switch (move_bits) {
+	case 'b': //Forward
+		move_type = 1;
+		break;
+	case 'c': //Reverse
+		move_type = 2;
+		break;
+	case 'd': //Left
+		move_type = 3;
+		break;
+	case 'e': //Right
+		move_type = 4;
+		break;
+	case 's': //Stop
+		move_type = 0;
+		break;
+	default: //Stop for other characters
+		move_type = 0;
+		break;
+	}
 }
-
-
 
 /* USER CODE END 0 */
 
@@ -287,89 +306,76 @@ int main(void)
   MX_TIM2_Init();
   MX_TIM15_Init();
   /* USER CODE BEGIN 2 */
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);
+	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
+	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
+	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);
 
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_4);
+	HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+	HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
+	HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
+	HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_4);
 
+	HAL_UART_Receive_DMA(&huart2, rx_data, 2);
 
-  HAL_UART_Receive_DMA(&huart2, rx_data,2);
-
-
-  HAL_TIM_IC_Start_IT(&htim15, TIM_CHANNEL_1);
-  HAL_TIM_IC_Start_IT(&htim15, TIM_CHANNEL_2);
-
+	HAL_TIM_IC_Start_IT(&htim15, TIM_CHANNEL_1);
+//  HAL_TIM_IC_Start_IT(&htim15, TIM_CHANNEL_2);
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
-	  //MAX CCR is 600. Don't give beyond this value
-	  while(move_type == 0){
-		  stop(50);
-		  speed_rpm_left = (speed_left == 0? 0: speed_rpm_left);
-		  speed_rpm_right = (speed_right == 0? 0: speed_rpm_right);
-	  }
-	  while(move_type == 1){
-		  move(1,speed_left,speed_right,50);
-		  //target_current = (float)(1 - (speed_rpm_right/100000)) * speed_right;
+	uint32_t last_timestamp = 0;
+	uint32_t timestamp, dt;
 
+//	TIM2->CCR1 = 500;
+//	TIM2->CCR2 = 0;
+//	move(0, 400, 400);
+//	HAL_Delay(5000);
+//	stop();
+//	TIM2->CCR1 = 0;
+//	TIM2->CCR2 = 0;
 
-		  if (speed_rpm_right < target_rpm) {
-			  speed_right++;
-		  }
-		  else {
-			  speed_right--;
-		  }
-		  if (speed_right > 400) {
-			  speed_right = 400;
-		  }
-
-		  if (speed_rpm_left < target_rpm) {
-			  speed_left++;
-		  }
-		  else {
-			  speed_left--;
-		  }
-		  if (speed_left > 400) {
-			  speed_left = 400;
-		  }
-
-	  }
-	  while(move_type == 2){
-		  move(0,speed_left,speed_right,50);
-	  }
-	  while(move_type == 3){
-		  rotate(1,speed_left,speed_right,50);
-	  }
-	  while(move_type == 4){
-		  rotate(0,speed_left,speed_right,50);
-	  }
+	while (1) {
+		timestamp = HAL_GetTick();
+		dt = timestamp - last_timestamp;
+		speed_left = update_pid(&pid_left, speed_rpm_left, dt);
+		speed_right = update_pid(&pid_right, speed_rpm_right, dt);
+		//MAX CCR is 600. Don't give beyond this value
+		if (move_type == 0) {
+			stop();
+//			move(1, speed_left, speed_right);
+		}
+		if (move_type == 1) {
+			move(1, speed_left, speed_right);
+		}
+		if (move_type == 2) {
+			move(0, speed_left, speed_right);
+		}
+		if (move_type == 3) {
+			rotate(1, speed_left, speed_right);
+		}
+		if (move_type == 4) {
+			rotate(0, speed_left, speed_right);
+		}
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
 
+		last_timestamp = timestamp;
+		HAL_Delay(20);
+	}
 
+	//Kind of useless but just in case
+	HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
+	HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_2);
+	HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_3);
+	HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_4);
 
-  }
-
-  //Kind of useless but just in case
-  HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
-  HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_2);
-  HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_3);
-  HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_4);
-
-  HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_1);
-  HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_2);
-  HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3);
-  HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_4);
+	HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_1);
+	HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_2);
+	HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3);
+	HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_4);
   /* USER CODE END 3 */
 }
 
@@ -595,13 +601,12 @@ static void MX_TIM15_Init(void)
 
   TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
-  TIM_IC_InitTypeDef sConfigIC = {0};
 
   /* USER CODE BEGIN TIM15_Init 1 */
 
   /* USER CODE END TIM15_Init 1 */
   htim15.Instance = TIM15;
-  htim15.Init.Prescaler = 1599;
+  htim15.Init.Prescaler = 73;
   htim15.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim15.Init.Period = 65535;
   htim15.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -616,25 +621,9 @@ static void MX_TIM15_Init(void)
   {
     Error_Handler();
   }
-  if (HAL_TIM_IC_Init(&htim15) != HAL_OK)
-  {
-    Error_Handler();
-  }
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim15, &sMasterConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
-  sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
-  sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
-  sConfigIC.ICFilter = 0;
-  if (HAL_TIM_IC_ConfigChannel(&htim15, &sConfigIC, TIM_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_IC_ConfigChannel(&htim15, &sConfigIC, TIM_CHANNEL_2) != HAL_OK)
   {
     Error_Handler();
   }
@@ -692,6 +681,9 @@ static void MX_DMA_Init(void)
   /* DMA1_Channel6_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel6_IRQn);
+  /* DMA1_Channel7_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel7_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel7_IRQn);
 
 }
 
@@ -726,6 +718,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
 
+  /*Configure GPIO pins : ENC_RIGHT_Pin ENC_LEFT_Pin */
+  GPIO_InitStruct.Pin = ENC_RIGHT_Pin|ENC_LEFT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
   /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
@@ -733,7 +731,7 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
+HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
 
 }
 /* USER CODE END 4 */
@@ -745,11 +743,10 @@ HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
-  __disable_irq();
-  while (1)
-  {
-  }
+	/* User can add his own implementation to report the HAL error return state */
+	__disable_irq();
+	while (1) {
+	}
   /* USER CODE END Error_Handler_Debug */
 }
 
