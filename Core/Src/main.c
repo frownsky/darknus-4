@@ -42,7 +42,7 @@
 /* Private variables ---------------------------------------------------------*/
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
-TIM_HandleTypeDef htim15;
+TIM_HandleTypeDef htim6;
 
 UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart2_rx;
@@ -59,7 +59,7 @@ static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_TIM2_Init(void);
-static void MX_TIM15_Init(void);
+static void MX_TIM6_Init(void);
 /* USER CODE BEGIN PFP */
 void stop();
 void move(int x, int s_left, int s_right);
@@ -73,22 +73,23 @@ void spin(int x, int s_left, int s_right);
 /* USER CODE BEGIN 0 */
 
 // PID Controller
-#define MOTOR_KP 3
-#define MOTOR_KI 2
-#define MOTOR_KD 1
+#define MOTOR_KP 0.2
+#define MOTOR_KI 0
+#define MOTOR_KD 0.1
 
 typedef struct PID_t {
 	float integral;
 	float derivative;
 	float last_error;
+	float error;
 } PID_t;
 
-PID_t pid_left = { .integral = 0, .derivative = 0, .last_error = 0 };
-PID_t pid_right = { .integral = 0, .derivative = 0, .last_error = 0 };
+PID_t pid_left = { .integral = 0, .derivative = 0, .last_error = 0, .error = 0 };
+PID_t pid_right = { .integral = 0, .derivative = 0, .last_error = 0, .error = 0 };
 
 volatile uint32_t move_type = 0;
-volatile uint16_t speed_left = 0;
-volatile uint16_t speed_right = 0;
+volatile int16_t speed_left = 0;
+volatile int16_t speed_right = 0;
 volatile uint16_t movement = 0;
 
 volatile float target_rpm = 50.0;
@@ -110,21 +111,21 @@ void reset_pid() {
 	pid_right.last_error = 0;
 }
 
-uint16_t update_pid(PID_t *pid, float current_rpm, uint32_t dt) {
-	float error = target_rpm - current_rpm;
-	pid->integral += error * dt / 1000;
-	pid->derivative = (error - pid->last_error) * dt / 1000;
-	float result = MOTOR_KP * error +
-	MOTOR_KI * pid->integral +
-	MOTOR_KD * pid->derivative;
-	pid->last_error = error;
-	if (result >= 600) {
-		return 600;
-	}
-	if (result <= 0) {
-		return 0;
-	}
-	return (uint16_t) result;
+int16_t update_pid(PID_t *pid, float current_rpm, uint32_t dt) {
+	pid->error = target_rpm - current_rpm;
+	pid->integral += pid->error * dt / 1000.0;
+	pid->derivative = ((pid->error - pid->last_error) * 1000.0 / dt);
+	float result = MOTOR_KP * pid->error +
+				   MOTOR_KI * pid->integral +
+				   MOTOR_KD * pid->derivative;
+	pid->last_error = pid->error;
+//	if (result >= 600) {
+//		return 600;
+//	}
+//	if (result <= 0) {
+//		return 0;
+//	}
+	return (int16_t) result;
 }
 
 void stop() {
@@ -142,8 +143,6 @@ void stop() {
 	TIM2->CCR4 = 0;
 	reset_pid();
 }
-
-
 
 // back left wheel: TIM2 CCR1 and 2
 // back right wheel: TIM2 CCR3 and 4
@@ -214,14 +213,13 @@ void spin(int x, int s_left, int s_right) {
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 	/* Prevent unused argument(s) compilation warning */
-	UNUSED(huart);
 
 	/* NOTE : This function should not be modified, when the callback is needed,
 	 the HAL_UART_RxCpltCallback can be implemented in the user file.
 	 */
 
-	uint8_t buffer_1 = *rx_data;
-	uint8_t buffer_2 = *(rx_data + 1);
+	uint8_t buffer_1 = rx_data[0];
+	uint8_t buffer_2 = rx_data[1];
 	/*
 	 * 16-bit value
 	 * received_data[9:0] is for speed
@@ -251,15 +249,19 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 	switch (move_bits) {
 	case 'b': //Forward
 		move_type = 1;
+		speed_left = speed_right = 400;
 		break;
 	case 'c': //Reverse
 		move_type = 2;
+		speed_left = speed_right = 400;
 		break;
 	case 'd': //Left
 		move_type = 3;
+		speed_left = speed_right = 400;
 		break;
 	case 'e': //Right
 		move_type = 4;
+		speed_left = speed_right = 400;
 		break;
 	case 's': //Stop
 		move_type = 0;
@@ -268,6 +270,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 		move_type = 0;
 		break;
 	}
+
 }
 
 /* USER CODE END 0 */
@@ -304,7 +307,7 @@ int main(void)
   MX_USART2_UART_Init();
   MX_TIM1_Init();
   MX_TIM2_Init();
-  MX_TIM15_Init();
+  MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
 	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
 	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
@@ -318,9 +321,6 @@ int main(void)
 
 	HAL_UART_Receive_DMA(&huart2, rx_data, 2);
 
-	HAL_TIM_IC_Start_IT(&htim15, TIM_CHANNEL_1);
-//  HAL_TIM_IC_Start_IT(&htim15, TIM_CHANNEL_2);
-
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -328,19 +328,13 @@ int main(void)
 	uint32_t last_timestamp = 0;
 	uint32_t timestamp, dt;
 
-//	TIM2->CCR1 = 500;
-//	TIM2->CCR2 = 0;
-//	move(0, 400, 400);
-//	HAL_Delay(5000);
-//	stop();
-//	TIM2->CCR1 = 0;
-//	TIM2->CCR2 = 0;
-
 	while (1) {
 		timestamp = HAL_GetTick();
 		dt = timestamp - last_timestamp;
-		speed_left = update_pid(&pid_left, speed_rpm_left, dt);
-		speed_right = update_pid(&pid_right, speed_rpm_right, dt);
+		speed_left += update_pid(&pid_left, speed_rpm_left, dt);
+		speed_right += update_pid(&pid_right, speed_rpm_right, dt);
+		speed_left = speed_left > 600 ? 600 : (speed_left < 0 ? 0 : speed_left);
+		speed_right = speed_right > 600 ? 600 : (speed_right < 0 ? 0 : speed_right);
 		//MAX CCR is 600. Don't give beyond this value
 		if (move_type == 0) {
 			stop();
@@ -415,9 +409,8 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_TIM1|RCC_PERIPHCLK_TIM15;
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_TIM1;
   PeriphClkInit.Tim1ClockSelection = RCC_TIM1CLK_HCLK;
-  PeriphClkInit.Tim15ClockSelection = RCC_TIM15CLK_HCLK;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {
     Error_Handler();
@@ -588,48 +581,41 @@ static void MX_TIM2_Init(void)
 }
 
 /**
-  * @brief TIM15 Initialization Function
+  * @brief TIM6 Initialization Function
   * @param None
   * @retval None
   */
-static void MX_TIM15_Init(void)
+static void MX_TIM6_Init(void)
 {
 
-  /* USER CODE BEGIN TIM15_Init 0 */
+  /* USER CODE BEGIN TIM6_Init 0 */
 
-  /* USER CODE END TIM15_Init 0 */
+  /* USER CODE END TIM6_Init 0 */
 
-  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
 
-  /* USER CODE BEGIN TIM15_Init 1 */
+  /* USER CODE BEGIN TIM6_Init 1 */
 
-  /* USER CODE END TIM15_Init 1 */
-  htim15.Instance = TIM15;
-  htim15.Init.Prescaler = 73;
-  htim15.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim15.Init.Period = 65535;
-  htim15.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim15.Init.RepetitionCounter = 0;
-  htim15.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_Base_Init(&htim15) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-  if (HAL_TIM_ConfigClockSource(&htim15, &sClockSourceConfig) != HAL_OK)
+  /* USER CODE END TIM6_Init 1 */
+  htim6.Instance = TIM6;
+  htim6.Init.Prescaler = 128 - 1;
+  htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim6.Init.Period = 50000 - 1;
+  htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim6) != HAL_OK)
   {
     Error_Handler();
   }
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim15, &sMasterConfig) != HAL_OK)
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim6, &sMasterConfig) != HAL_OK)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN TIM15_Init 2 */
-
-  /* USER CODE END TIM15_Init 2 */
+  /* USER CODE BEGIN TIM6_Init 2 */
+	HAL_TIM_Base_Init(&htim6);
+	HAL_TIM_Base_Start_IT(&htim6);
+  /* USER CODE END TIM6_Init 2 */
 
 }
 
@@ -731,9 +717,6 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
-
-}
 /* USER CODE END 4 */
 
 /**
